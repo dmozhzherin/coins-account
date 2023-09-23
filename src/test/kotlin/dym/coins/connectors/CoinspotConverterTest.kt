@@ -1,0 +1,79 @@
+package dym.coins.connectors
+
+import dym.coins.coinspot.api.resource.OperationType
+import dym.coins.coinspot.api.resource.OrderHistoryResponse
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import java.math.RoundingMode
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
+
+/**
+ * @author dym
+ * Date: 21.09.2023
+ */
+class CoinspotConverterTest {
+
+    @Test
+    fun buyOrderFrom() {
+        val converter = CoinspotConverter(ZoneId.of("Australia/Sydney"))
+
+        val tradeOp = OrderHistoryResponse.TradeOperation(
+            coin = "POE",
+            rate = "0.149904".toBigDecimal(),
+            market = "POE/AUD",
+            amount = "297.32362045".toBigDecimal(),
+            type = OperationType.INSTANT,
+            solddate = ZonedDateTime.parse("2018-01-18T15:14:33.780Z"),
+            total = "44.57".toBigDecimal(),
+            audfeeExGst = "1.18014122".toBigDecimal(),
+            audGst = "0.11801412".toBigDecimal(),
+            audtotal = "44.57".toBigDecimal()
+        )
+
+        val logOp = converter.buyOrderFrom(tradeOp)
+
+        println(logOp)
+
+        with(logOp) {
+            assertTrue(buy == "POE")
+            assertTrue(sell == "AUD")
+            assertEquals(LocalDate.parse("2018-01-19"), date)
+            assertEquals(capital, (rate * buyAmount).setScale(2, RoundingMode.HALF_EVEN))
+        }
+    }
+
+    @Test
+    fun sellOrderFrom() {
+        val converter = CoinspotConverter(ZoneId.of("Australia/Sydney"))
+
+        val tradeOp = OrderHistoryResponse.TradeOperation(
+            coin = "LOOM",
+            rate = "0.099455".toBigDecimal(),
+            market = "LOOM/AUD",
+            amount = "492.18160892".toBigDecimal(),
+            type = OperationType.TAKE_PROFIT,
+            solddate = ZonedDateTime.parse("2023-09-20T12:20:43.619Z"),
+            total = "48.949921915138596".toBigDecimal(),
+            audfeeExGst = "0.44949423".toBigDecimal(),
+            audGst = "0.04494942".toBigDecimal(),
+            audtotal = "48.95".toBigDecimal()
+        )
+
+        val logOp = converter.sellOrderFrom(tradeOp)
+
+        println(logOp)
+
+        with(logOp) {
+            assertTrue(buy == "AUD")
+            assertTrue(sell == "LOOM")
+            assertEquals(LocalDate.parse("2023-09-20"), date)
+            //When selling a coin for AUD, i.e. buying AUD for a coin, capital is equal to the rounded purchase amount
+            assertEquals(capital, buyAmount.setScale(2, RoundingMode.HALF_EVEN))
+        }
+
+
+    }
+}

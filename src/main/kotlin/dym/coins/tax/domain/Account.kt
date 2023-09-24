@@ -2,21 +2,25 @@ package dym.coins.tax.domain
 
 import dym.coins.enum.Coins
 import dym.coins.exceptions.TradeOperationLogException
-import dym.coins.tax.dto.LogOperation
+import dym.coins.tax.dto.IncomingLog
+import dym.coins.tax.dto.OrderedLog
+import dym.coins.tax.dto.ReceiveLog
+import dym.coins.tax.dto.SendLog
+import dym.coins.tax.dto.TradeLog
 import java.math.BigDecimal
+import java.time.Instant
 import java.time.LocalDate
 import java.time.Month
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.SortedMap
 import java.util.TreeMap
-
-private const val DEFAULT_TIMEZONE = "Australia/Sydney"
 
 /**
  * @author dym
  * Date: 19.09.2023
  */
-class Account(private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZONE)) {
+class Account() {
 
     /**
      * Income on coins held for less than a year
@@ -42,36 +46,28 @@ class Account(private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZONE)) {
 
     val errorLog: MutableList<ErrorLog> = ArrayList()
 
-    fun registerTradeOperation(op: LogOperation) {
-        val balance = account.computeIfAbsent(op.buy) { k -> TreeMap() }
+    private var lastDate: ZonedDateTime = Instant.ofEpochMilli(0).atZone(ZoneId.of("UTC"))
+
+    fun registerTradeOperation(op: TradeLog) {
+        verifySequenceConsistency(op)
 
         if (Coins.AUD.name == op.buy.uppercase()) { //We sold a coin for fiat
-            processSell(op)
+            processSellFiFo(op)
         } else {    //We bought a coin, add to the balance for the purchase date
-            balance.computeIfAbsent(op.date) { k -> ArrayList() }.add(CapitalAmount(op.capital, op.buyAmount))
-            getYearlyBalances(op.timestamp.year).merge(op.buy, op.buyAmount, BigDecimal::add)
+            registerIncoming(op)
             if (Coins.AUD.name != op.sell.uppercase()) {    //The coin was bought for another coin, which was sold
-                processSell(op)
+                processSellFiFo(op)
             }
         }
     }
 
-    internal fun getYearlyBalances(year: Int): MutableMap<String, BigDecimal> {
-        //First operation in a new year finalises balances for the previous year, copying them over
-        return balances.getOrPut(year) {
-            if (balances.isEmpty()) HashMap()
-            else HashMap(getYearlyBalances(year - 1)) }
-    }
+    private fun processSellFiFo(op: TradeLog) {
+        //The balance of the sold coin at the time of the trading event
+        val soldBalance = account[op.sell] ?: throw TradeOperationLogException("No balance to sell $op", op)
 
-    private fun processSell(op: LogOperation) {
         //We sold a coin, subtract from the total balance for the year of the sale
         val balance = getYearlyBalances(op.timestamp.year).merge(op.sell, op.sellAmount, BigDecimal::subtract)
-
-        verifyBalance(balance, op)
-
-        //The balance of the sold coin at the time of the trading event
-        val soldBalance = account[op.sell] ?:
-            throw TradeOperationLogException("No balance to sell ${op.sell} for ${op.buy}", op)
+        assert(verifyBalance(balance, op)) { "Balance is negative after $op" }
 
         var opAmount = op.sellAmount
         var capital = BigDecimal.ZERO
@@ -90,7 +86,8 @@ class Account(private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZONE)) {
                 val opLeftover = bucket.amount - opAmount
 
                 if (opLeftover.signum() <= 0) {    //It means that the bucket was not enough (or exactly enough)
-                    iterationCapital = if (opLeftover.signum() == 0) opCapital else (bucket.amount * opCapital)/opAmount
+                    iterationCapital =
+                        if (opLeftover.signum() == 0) opCapital else (bucket.amount * opCapital) / opAmount
 
                     //The leftover from the operation capital after selling the bucket,
                     //the rest will be used for the next buckets
@@ -104,29 +101,29 @@ class Account(private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZONE)) {
                     //the rest must be taken from the next buckets
                     opAmount = opLeftover.negate()
 
-                    //The whole balance is spent on the operation
+                    //The whole bucket balance is spent on the operation
                     dailyBalancesIter.remove()
 
                     //For verification purposes
                     capital += iterationCapital
                 } else {    //The bucket covered the whole operation
-                    val bucketUsedCapital = (opAmount * bucket.capital)/bucket.amount
-                    bucket.capital -= bucketUsedCapital
+                    val usedBucketCapital = (opAmount * bucket.capital) / bucket.amount
+                    bucket.capital -= usedBucketCapital
                     bucket.amount = opLeftover
-                    iterationGain = opCapital - bucketUsedCapital
+                    iterationGain = opCapital - usedBucketCapital
                     opAmount = BigDecimal.ZERO
 
                     //For verification purposes
                     capital += opCapital
                 }
 
-                val taxYear: Int = getTaxYear(op.date)
+                val taxYear: Int = getTaxYear(op.date())
                 when {
                     iterationGain.signum() < 0
-                        -> loss.merge(taxYear, iterationGain, BigDecimal::add)
+                    -> loss.merge(taxYear, iterationGain, BigDecimal::add)
                     //The purchase date is a year before the sale date
-                    balanceDate.isBefore(op.date.minusYears(1))
-                        -> gainDiscounted.merge(taxYear, iterationGain, BigDecimal::add)
+                    balanceDate.isBefore(op.date().minusYears(1))
+                    -> gainDiscounted.merge(taxYear, iterationGain, BigDecimal::add)
 
                     else -> gain.merge(taxYear, iterationGain, BigDecimal::add)
                 }
@@ -145,19 +142,89 @@ class Account(private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZONE)) {
     }
 
     /**
+     * Register a "receive" transfer operation in the account
+     */
+    fun processReceive(op: ReceiveLog) {
+        verifySequenceConsistency(op)
+        registerIncoming(op);
+    }
+
+    /**
+     * Register a send transfer operation in the account.
+     * Sending is like selling, but gain/loss is not acquired.
+     */
+    fun processSendFiFo(op: SendLog) {
+        verifySequenceConsistency(op)
+
+        val sentBalance = account[op.coin] ?: throw TradeOperationLogException("No balance to send $op", op)
+
+        //We sent a coin, subtract from the total balance for the year of the sending event
+        val balance = getYearlyBalances(op.timestamp.year).merge(op.coin, op.amount, BigDecimal::subtract)
+        assert(verifyBalance(balance, op)) { "Balance is negative after $op" }
+
+        var opAmount = op.amount
+        val iterator = sentBalance.entries.iterator()
+
+        while (iterator.hasNext() && opAmount != BigDecimal.ZERO) {
+            val (_, balancesOnDate) = iterator.next()
+            val dailyBalancesIter = balancesOnDate.listIterator()
+
+            while (dailyBalancesIter.hasNext() && opAmount != BigDecimal.ZERO) {
+                val bucket = dailyBalancesIter.next()
+
+                val opLeftover = bucket.amount - opAmount
+
+                if (opLeftover.signum() <= 0) {    //It means that the bucket was not enough (or exactly enough)
+                    //The leftover from the operation after sending the bucket,
+                    //the rest must be taken from the next buckets
+                    opAmount = opLeftover.negate()
+
+                    //The whole bucket balance is spent on the operation
+                    dailyBalancesIter.remove()
+                } else {    //The bucket covered the whole operation
+                    bucket.capital = (opLeftover * bucket.capital) / bucket.amount
+                    bucket.amount = opLeftover
+                    opAmount = BigDecimal.ZERO
+                }
+            }
+            //Delete the date if there is no balance left on it
+            if (balancesOnDate.isEmpty()) iterator.remove()
+        }
+    }
+
+    private fun registerIncoming(op: IncomingLog) {
+        val balance = getCoinBalance(op.incomingCoin())
+        balance.computeIfAbsent(op.date()) { k -> ArrayList() }.add(CapitalAmount(op.capital, op.incomingAmount()))
+        getYearlyBalances(op.timestamp.year).merge(op.incomingCoin(), op.incomingAmount(), BigDecimal::add)
+    }
+
+    private fun getCoinBalance(coin: String): SortedMap<LocalDate, MutableList<CapitalAmount>>
+        = account.computeIfAbsent(coin) { k -> TreeMap() }
+
+    private fun verifySequenceConsistency(op: OrderedLog) {
+        if (op.timestamp.isBefore(lastDate)) {
+            throw TradeOperationLogException("Trade operation is out of order $op", op)
+        }
+        lastDate = op.timestamp
+    }
+
+    internal fun getYearlyBalances(year: Int): MutableMap<String, BigDecimal> {
+        //First operation in a new year finalises balances for the previous year, copying them over
+        return balances.getOrPut(year) {
+            if (balances.isEmpty()) HashMap()
+            else HashMap(getYearlyBalances(year - 1))
+        }
+    }
+
+    /**
      * Verify that the balance is not negative. If it is, log an error.
      * Balance may become nagative if the log is incomplete, e.g. if the log does not contain all the trades and transfers
      * @return true if the balance is valid, false otherwise
      */
-    private fun verifyBalance(balance: BigDecimal?, op: LogOperation): Boolean {
+    private fun verifyBalance(balance: BigDecimal?, op: OrderedLog): Boolean {
         return if (balance!!.signum() >= 0) true
         else {
-            errorLog += ErrorLog(
-                String.format(
-                    "Negative balance %1f, after operation: buy %2s, %3f, sell %4s, %5f%n",
-                    balance, op.buy, op.buyAmount, op.sell, op.sellAmount
-                ), op
-            )
+            errorLog += ErrorLog("Negative balance $balance, after operation: $op", op)
             false
         }
     }
@@ -172,6 +239,14 @@ class Account(private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZONE)) {
 
     private data class CapitalAmount(var capital: BigDecimal, var amount: BigDecimal)
 
+    /**
+     * Log of errors that occurred during the processing of the trade operations
+     *
+     * @consider adding error type/code
+     *
+     * @param error error message
+     * @param op operation that caused the error
+     */
     @JvmRecord
-    data class ErrorLog(val error: String, val op: LogOperation)
+    data class ErrorLog(val error: String, val op: OrderedLog)
 }

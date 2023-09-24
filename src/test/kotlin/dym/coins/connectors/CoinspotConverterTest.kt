@@ -33,14 +33,14 @@ class CoinspotConverterTest {
             audtotal = "44.57".toBigDecimal()
         )
 
-        val logOp = converter.buyOrderFrom(tradeOp)
+        val logOp = converter.buyLogFrom(tradeOp)
 
         println(logOp)
 
         with(logOp) {
             assertTrue(buy == "POE")
             assertTrue(sell == "AUD")
-            assertEquals(LocalDate.parse("2018-01-19"), date)
+            assertEquals(LocalDate.parse("2018-01-19"), date())
             assertEquals(capital, (rate * buyAmount).setScale(2, RoundingMode.HALF_EVEN))
         }
     }
@@ -62,18 +62,25 @@ class CoinspotConverterTest {
             audtotal = "48.95".toBigDecimal()
         )
 
-        val logOp = converter.sellOrderFrom(tradeOp)
+        val logOp = converter.sellLogFrom(tradeOp)
 
         println(logOp)
 
         with(logOp) {
             assertTrue(buy == "AUD")
             assertTrue(sell == "LOOM")
-            assertEquals(LocalDate.parse("2023-09-20"), date)
+            assertEquals(LocalDate.parse("2023-09-20"), date())
             //When selling a coin for AUD, i.e. buying AUD for a coin, capital is equal to the rounded purchase amount
             assertEquals(capital, buyAmount.setScale(2, RoundingMode.HALF_EVEN))
         }
 
 
+    }
+
+    @Test
+    fun justForFun() {
+        println("10.000".toBigDecimal() * "10".toBigDecimal())
+        println("10".toBigDecimal() * "10.000".toBigDecimal())
+        println("10.0000".toBigDecimal() / "3.000".toBigDecimal())
     }
 }

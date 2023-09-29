@@ -5,14 +5,14 @@ import dym.coins.tax.dto.ReceiveLog
 import dym.coins.tax.dto.SendLog
 import dym.coins.tax.dto.TradeLog
 import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.Test
-
 import java.math.BigDecimal
 import java.math.BigDecimal.ONE
+import java.math.BigDecimal.TEN
 import java.math.BigDecimal.ZERO
-import java.time.ZonedDateTime
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -25,27 +25,27 @@ class AccountTest {
     fun registerTradeOperation_ensureOrderConsistency() {
         val account = Account()
 
-        account.registerTradeOperation(
-            TradeLog(
-                ZonedDateTime.parse("2021-10-10T10:00:00+10:00[Australia/Sydney]"),
-                "SMTH", ONE, "AUD", ONE, ONE, ONE, ONE
+        account.register(
+            TradeLog.of(
+                "2021-10-10T10:00:00+10:00[Australia/Sydney]",
+                "SMTH", "1", "AUD", "1", "1", "1", "1"
             )
         )
 
         //Given operation date is after the last operation when registering the operation expect no exception
-        account.registerTradeOperation(
-            TradeLog(
-                ZonedDateTime.parse("2021-10-20T10:00:00+10:00[Australia/Sydney]"),
-                "SMTH", ONE, "AUD", ONE, ONE, ONE, ONE
+        account.register(
+            TradeLog.of(
+                "2021-10-20T10:00:00+10:00[Australia/Sydney]",
+                "SMTH", "1", "AUD", "1", "1", "1", "1"
             )
         )
 
         //Given operation date is before the last operation when registering the operation expect TradeOperationLogException
         assertThrows(TradeOperationLogException::class.java) {
-            account.registerTradeOperation(
-                TradeLog(
-                    ZonedDateTime.parse("2021-10-05T10:00:00+10:00[Australia/Sydney]"),
-                    "SMTH", ONE, "AUD", ONE, ONE, ONE, ONE
+            account.register(
+                TradeLog.of(
+                    "2021-10-05T10:00:00+10:00[Australia/Sydney]",
+                    "SMTH", "1", "AUD", "1", "1", "1", "1"
                 )
             )
         }
@@ -55,7 +55,8 @@ class AccountTest {
     fun registerTradeOperation_ensureNegativeBalanceVerification() {
         val account = Account()
 
-        account.registerTradeOperation(
+        val SMTH = AssetType.of("SMTH")
+        account.register(
             TradeLog.of(
                 "2021-10-10T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "AUD", "10", "2", "0.1", "10"
@@ -63,19 +64,18 @@ class AccountTest {
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
-        assertBDEquals("5".toBigDecimal(), account.balances[2021]?.get("SMTH"))
+        assertBDEquals("5".toBigDecimal(), account.balances[2022]?.get(SMTH))
 
         //Given a log operation with correct date, SMTH coin as sell, ANY coin as buy,
         //sellAmount greater than the current balance, any rate, any fee, any capital
         //When registering the operation
         //Then expect assertion error
         assertThrows(AssertionError::class.java) {
-            account.registerTradeOperation(
+            account.register(
                 TradeLog.of(
                     "2021-10-10T10:10:00+10:00[Australia/Sydney]",
                     "ANY", "5", "SMTH", "10", "2", "0.1", "10"
@@ -83,10 +83,9 @@ class AccountTest {
             )
         }
 
-        //Assertion error is fatal, so consistency is broken,
-        //but if -ea is not set, then the error is logged and the balances are updated
-        assertBDEquals("-5".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertFalse(account.errorLog.isEmpty())
+        //Assertion error is fatal, but if -ea is not set, then the error is logged and the balances are updated
+        //The consistency of the account is not guaranteed in this case.
+        assertBDEquals("-5".toBigDecimal(), account.balances[2022]?.get(SMTH))
 
         //assert nothing else changed
         assertFalse(account.balances.isEmpty())
@@ -100,302 +99,299 @@ class AccountTest {
     fun registerTradeOperation_buyAndSellWithinAYear() {
         val account = Account()
 
-        account.registerTradeOperation(
+        val SMTH = AssetType.of("SMTH")
+        account.register(
             TradeLog.of(
-                "2021-10-10T10:00:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "AUD", "10", "2", "0.1", "10"
             )
         )
 
-        account.registerTradeOperation(
+        account.register(
             TradeLog.of(
-                "2021-10-10T10:10:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:10:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "AUD", "5", "1", "0.1", "5"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
-        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get("SMTH"))
+        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get(SMTH))
 
-        account.registerTradeOperation(
+        val ANY = AssetType.of("ANY")
+        account.register(
             TradeLog.of(
-                "2021-10-10T10:20:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:20:00+10:00[Australia/Sydney]",
                 "ANY", "8", "AUD", "8", "1", "0.1", "5"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(2, account.balances[2021]?.size)
-        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get("ANY"))
+        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get(ANY))
 
         //Given a log operation with correct date, SMTH coin as sell, AUD as buy,
         //sellAmount less than the current SMTH balance, any rate, any fee, any capital
         //When registering the operation
         //Then the operation is registered, balances are updated, no errors are logged and gain is recorded
-        account.registerTradeOperation(
+        account.register(
             TradeLog.of(
-                "2021-10-10T10:30:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:30:00+10:00[Australia/Sydney]",
                 "AUD", "15", "SMTH", "5", "3", "0.1", "15"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(2, account.balances[2021]?.size)
-        assertBDEquals("5".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get("ANY"))
-        assertBDEquals("5".toBigDecimal(), account.gain[2022])
+        assertBDEquals("5".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get(ANY))
+        assertBDEquals("5".toBigDecimal(), account.gainTotal[2021])
+        assertBDEquals("5".toBigDecimal(), account.gain[2021]?.get(SMTH))
+        assertNull(account.gain[2021]?.get(ANY))
     }
 
     @Test
     fun registerTradeOperation_buyAndSellAfterAYear() {
         val account = Account()
 
-        account.registerTradeOperation(
+        val SMTH = AssetType.of("SMTH")
+        account.register(
             TradeLog.of(
-                "2021-10-10T10:00:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "AUD", "10", "2", "0.1", "10"
             )
         )
 
-        account.registerTradeOperation(
+        account.register(
             TradeLog.of(
-                "2021-11-11T10:10:00+10:00[Australia/Sydney]",
+                "2021-02-11T10:10:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "AUD", "5", "1", "0.1", "5"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
-        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get("SMTH"))
+        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get(SMTH))
 
-        account.registerTradeOperation(
+        val ANY = AssetType.of("ANY")
+        account.register(
             TradeLog.of(
-                "2021-12-12T10:20:00+10:00[Australia/Sydney]",
+                "2021-03-12T10:20:00+10:00[Australia/Sydney]",
                 "ANY", "8", "AUD", "5", "0.625", "0.1", "5"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(2, account.balances[2021]?.size)
-        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get("ANY"))
+        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get(ANY))
 
         //Given a log operation with correct date, SMTH coin as sell, AUD as buy,
         //sellAmount less than the current SMTH balance, any rate, any fee, any capital
         //When registering the operation
         //Then the operation is registered, balances are updated, no errors are logged and gain is recorded
-        account.registerTradeOperation(
+        account.register(
             TradeLog.of(
-                "2022-10-11T10:30:00+10:00[Australia/Sydney]",
+                "2022-01-11T10:30:00+10:00[Australia/Sydney]",
                 "AUD", "21", "SMTH", "7", "3", "0.1", "21"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertEquals(2, account.balances.size)  //balances for 2021 and 2022
         assertEquals(2, account.balances[2021]?.size)   //balances for SMTH and ANY
         assertEquals(2, account.balances[2022]?.size)   //balances for SMTH and ANY
 
-        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get("ANY"))
+        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get(ANY))
 
-        assertBDEquals("3".toBigDecimal(), account.balances[2022]?.get("SMTH"))
-        assertBDEquals("8".toBigDecimal(), account.balances[2022]?.get("ANY"))
-        assertBDEquals("4".toBigDecimal(), account.gain[2023])
-        assertBDEquals("5".toBigDecimal(), account.gainDiscounted[2023])
+        assertBDEquals("3".toBigDecimal(), account.balances[2022]?.get(SMTH))
+        assertBDEquals("8".toBigDecimal(), account.balances[2022]?.get(ANY))
+        assertBDEquals("4".toBigDecimal(), account.gainTotal[2022])
+        assertBDEquals("5".toBigDecimal(), account.gainDiscountedTotal[2022])
 
         //Sell ANY for AUD and incur a loss
-        account.registerTradeOperation(
+        account.register(
             TradeLog.of(
-                "2022-12-12T10:20:00+10:00[Australia/Sydney]",
+                "2022-03-12T10:20:00+10:00[Australia/Sydney]",
                 "AUD", "1", "ANY", "4", "4", "0.1", "1"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertEquals(2, account.balances.size)  //balances for 2021 and 2022
         assertEquals(2, account.balances[2021]?.size)   //balances for SMTH and ANY
         assertEquals(2, account.balances[2022]?.size)   //balances for SMTH and ANY
 
-        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get("ANY"))
+        assertBDEquals("10".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("8".toBigDecimal(), account.balances[2021]?.get(ANY))
 
-        assertBDEquals("3".toBigDecimal(), account.balances[2022]?.get("SMTH"))
-        assertBDEquals("4".toBigDecimal(), account.gain[2023])
-        assertBDEquals("5".toBigDecimal(), account.gainDiscounted[2023])
+        assertBDEquals("3".toBigDecimal(), account.balances[2022]?.get(SMTH))
+        assertBDEquals("4".toBigDecimal(), account.gainTotal[2022])
+        assertBDEquals("5".toBigDecimal(), account.gainDiscountedTotal[2022])
 
-        assertBDEquals("4".toBigDecimal(), account.balances[2022]?.get("ANY"))
-        assertBDEquals("-1.5".toBigDecimal(), account.loss[2023])
+        assertBDEquals("4".toBigDecimal(), account.balances[2022]?.get(ANY))
+        assertBDEquals("-1.5".toBigDecimal(), account.lossTotal[2022])
     }
 
     @Test
     fun processReceiveTest() {
         val account = Account()
 
-        account.processReceive(
+        val SMTH = AssetType.of("SMTH")
+        account.register(
             ReceiveLog.of(
-                "2021-10-10T10:00:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "10"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
-        assertBDEquals("5".toBigDecimal(), account.balances[2021]?.get("SMTH"))
+        assertBDEquals("5".toBigDecimal(), account.balances[2021]?.get(SMTH))
 
-        account.processReceive(
+        account.register(
             ReceiveLog.of(
-                "2021-10-20T10:00:00+10:00[Australia/Sydney]",
+                "2021-01-20T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "7", "21"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(1, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
-        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get("SMTH"))
+        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get(SMTH))
 
-        account.processReceive(
+        val ANY = AssetType.of("ANY")
+        account.register(
             ReceiveLog.of(
-                "2022-10-30T10:00:00+10:00[Australia/Sydney]",
+                "2022-01-30T10:00:00+10:00[Australia/Sydney]",
                 "ANY", "7", "21"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertEquals(2, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
         assertEquals(2, account.balances[2022]?.size)
-        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("12".toBigDecimal(), account.balances[2022]?.get("SMTH"))
-        assertBDEquals("7".toBigDecimal(), account.balances[2022]?.get("ANY"))
+        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("12".toBigDecimal(), account.balances[2022]?.get(SMTH))
+        assertBDEquals("7".toBigDecimal(), account.balances[2022]?.get(ANY))
     }
 
     @Test
     fun processSendFiFoTest() {
         val account = Account()
 
+        val SMTH = AssetType.of("SMTH")
         assertThrows(TradeOperationLogException::class.java) {
-            account.processSendFiFo(
+            account.register(
                 SendLog.of(
-                    "2021-10-10T10:00:00+10:00[Australia/Sydney]",
+                    "2021-01-10T10:00:00+10:00[Australia/Sydney]",
                     "SMTH", "5", "10"
                 )
             )
         }
 
         //Given we received SMTH and ANY coins
-        account.processReceive(
+        account.register(
             ReceiveLog.of(
-                "2021-10-10T10:00:00+10:00[Australia/Sydney]",
+                "2021-01-10T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "5", "10"
             )
         )
 
-        account.processReceive(
+        account.register(
             ReceiveLog.of(
-                "2021-10-20T10:00:00+10:00[Australia/Sydney]",
+                "2021-01-20T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "7", "21"
             )
         )
 
-        account.processReceive(
+        val ANY = AssetType.of("ANY")
+        account.register(
             ReceiveLog.of(
-                "2022-10-10T10:00:00+10:00[Australia/Sydney]",
+                "2022-01-10T10:00:00+10:00[Australia/Sydney]",
                 "ANY", "7", "21"
             )
         )
 
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertEquals(2, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
         assertEquals(2, account.balances[2022]?.size)
-        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("12".toBigDecimal(), account.balances[2022]?.get("SMTH"))
-        assertBDEquals("7".toBigDecimal(), account.balances[2022]?.get("ANY"))
+        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("12".toBigDecimal(), account.balances[2022]?.get(SMTH))
+        assertBDEquals("7".toBigDecimal(), account.balances[2022]?.get(ANY))
 
-        account.processSendFiFo(
+        account.register(
             SendLog.of(
-                "2022-10-20T10:00:00+10:00[Australia/Sydney]",
+                "2022-01-20T10:00:00+10:00[Australia/Sydney]",
                 "ANY", "5", "21"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertEquals(2, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
         assertEquals(2, account.balances[2022]?.size)
-        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals("12".toBigDecimal(), account.balances[2022]?.get("SMTH"))
-        assertBDEquals("2".toBigDecimal(), account.balances[2022]?.get("ANY"))
+        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals("12".toBigDecimal(), account.balances[2022]?.get(SMTH))
+        assertBDEquals("2".toBigDecimal(), account.balances[2022]?.get(ANY))
 
-        account.processSendFiFo(
+        account.register(
             SendLog.of(
-                "2022-10-30T10:00:00+10:00[Australia/Sydney]",
+                "2022-01-30T10:00:00+10:00[Australia/Sydney]",
                 "SMTH", "12", "12"
             )
         )
 
         assertFalse(account.balances.isEmpty())
-        assertTrue(account.errorLog.isEmpty())
         assertTrue(account.gain.isEmpty())
         assertTrue(account.gainDiscounted.isEmpty())
         assertTrue(account.loss.isEmpty())
         assertEquals(2, account.balances.size)
         assertEquals(1, account.balances[2021]?.size)
         assertEquals(2, account.balances[2022]?.size)
-        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get("SMTH"))
-        assertBDEquals(ZERO, account.balances[2022]?.get("SMTH"))
-        assertBDEquals("2".toBigDecimal(), account.balances[2022]?.get("ANY"))
+        assertBDEquals("12".toBigDecimal(), account.balances[2021]?.get(SMTH))
+        assertBDEquals(ZERO, account.balances[2022]?.get(SMTH))
+        assertBDEquals("2".toBigDecimal(), account.balances[2022]?.get(ANY))
     }
 
     @Test
@@ -403,20 +399,20 @@ class AccountTest {
         val account = Account()
 
         val balances2017 = account.getYearlyBalances(2017)
-        balances2017["BTC"] = BigDecimal.TEN
+        balances2017[AssetType.BCC] = TEN
 
         val balances2018 = account.getYearlyBalances(2018)
-        assertEquals(BigDecimal.TEN, balances2018["BTC"])
+        assertEquals(TEN, balances2018[AssetType.BCC])
 
         val balances2021 = account.getYearlyBalances(2021)
-        assertEquals(BigDecimal.TEN, balances2021["BTC"])
+        assertEquals(TEN, balances2021[AssetType.BCC])
 
-        balances2018["BTC"] = BigDecimal.ONE
+        balances2018[AssetType.BCC] = ONE
 
         // After changing balance in 2018, balance in 2019 should not change,
         // because it was copied from 2019 earlier
         val balances2019 = account.getYearlyBalances(2019)
-        assertBDEquals(BigDecimal.TEN, balances2019["BTC"])
+        assertBDEquals(TEN, balances2019[AssetType.BCC])
     }
 
     private fun assertBDEquals(expected: BigDecimal, actual: BigDecimal?) {

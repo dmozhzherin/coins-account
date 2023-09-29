@@ -5,10 +5,10 @@ import java.math.BigDecimal
 
 /**
  * @author dym
- * Date: 24.09.2023
+ * Date: 26.09.2023
  */
-interface IncomingLog: OrderedLog {
+interface OutgoingLog: OrderedLog {
     val capital: BigDecimal
-    val incomingAsset: AssetType
-    val incomingAmount: BigDecimal
+    val outgoingAsset: AssetType
+    val outgoingAmount: BigDecimal
 }

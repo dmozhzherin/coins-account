@@ -1,5 +1,6 @@
 package dym.coins.tax.dto
 
+import dym.coins.tax.domain.AssetType
 import java.math.BigDecimal
 
 /**
@@ -7,7 +8,7 @@ import java.math.BigDecimal
  * Date: 24.09.2023
  */
 interface TransferLog : OrderedLog{
-    val coin: String
+    val asset: AssetType
     val amount: BigDecimal
-    val capital: BigDecimal?
+    val capital: BigDecimal
 }

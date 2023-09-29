@@ -1,12 +1,13 @@
 package dym.coins.tax.domain
 
-import dym.coins.enum.Coins
 import dym.coins.exceptions.TradeOperationLogException
+import dym.coins.tax.Config.Companion.ERROR_THRESHOLD
 import dym.coins.tax.dto.IncomingLog
 import dym.coins.tax.dto.OrderedLog
 import dym.coins.tax.dto.ReceiveLog
 import dym.coins.tax.dto.SendLog
 import dym.coins.tax.dto.TradeLog
+import mu.KotlinLogging
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -20,56 +21,78 @@ import java.util.TreeMap
  * @author dym
  * Date: 19.09.2023
  */
-class Account() {
+class Account() : Registry {
+
+    private val logger = KotlinLogging.logger {}
 
     /**
      * Income on coins held for less than a year
      */
-    val gain: MutableMap<Int, BigDecimal> = HashMap()
+    val gain: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
+
+    /**
+     * Total income on coins held for less than a year
+     */
+    val gainTotal: MutableMap<Int, BigDecimal> = HashMap()
 
     /**
      * Income on coins held for more than a year
      */
-    val gainDiscounted: MutableMap<Int, BigDecimal> = HashMap()
+    val gainDiscounted: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
+
+    /**
+     * Total income on coins held for more than a year
+     */
+    val gainDiscountedTotal: MutableMap<Int, BigDecimal> = HashMap()
 
     /**
      * Loss on coins
      */
-    val loss: MutableMap<Int, BigDecimal> = HashMap()
+    val loss: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
+
+    /**
+     * Total loss on coins
+     */
+    val lossTotal: MutableMap<Int, BigDecimal> = HashMap()
 
     /**
      * Map of coin -> date -> list of buy buckets with corresponding rates
      */
-    private val account: MutableMap<String, SortedMap<LocalDate, MutableList<CapitalAmount>>> = HashMap()
+    private val account: MutableMap<AssetType, SortedMap<LocalDate, MutableList<CapitalAmount>>> = HashMap()
 
-    val balances: SortedMap<Int, MutableMap<String, BigDecimal>> = TreeMap()
-
-    val errorLog: MutableList<ErrorLog> = ArrayList()
+    val balances: SortedMap<Int, MutableMap<AssetType, BigDecimal>> = TreeMap()
 
     private var lastDate: ZonedDateTime = Instant.ofEpochMilli(0).atZone(ZoneId.of("UTC"))
 
-    fun registerTradeOperation(op: TradeLog) {
+    /**
+     * Register a trade operation in the account.
+     */
+    override fun register(op: TradeLog) {
         verifySequenceConsistency(op)
 
-        if (Coins.AUD.name == op.buy.uppercase()) { //We sold a coin for fiat
-            processSellFiFo(op)
+        if (AssetType.AUD == op.incomingAsset) { //We sold a coin for fiat
+            processSell(op)
         } else {    //We bought a coin, add to the balance for the purchase date
             registerIncoming(op)
-            if (Coins.AUD.name != op.sell.uppercase()) {    //The coin was bought for another coin, which was sold
-                processSellFiFo(op)
+            if (AssetType.AUD != op.outgoingAsset) {    //The coin was bought for another coin, which was sold
+                processSell(op)
             }
         }
     }
 
-    private fun processSellFiFo(op: TradeLog) {
+    private fun processSell(op: TradeLog) {
         //The balance of the sold coin at the time of the trading event
-        val soldBalance = account[op.sell] ?: throw TradeOperationLogException("No balance to sell $op", op)
+        val soldBalance = account[op.outgoingAsset] ?: throw TradeOperationLogException("No balance to sell $op", op)
 
-        //We sold a coin, subtract from the total balance for the year of the sale
-        val balance = getYearlyBalances(op.timestamp.year).merge(op.sell, op.sellAmount, BigDecimal::subtract)
-        assert(verifyBalance(balance, op)) { "Balance is negative after $op" }
+        //We sold a coin, subtract from the total balance for the financial year of the sale
+        val taxYear = getTaxYear(op.timestamp)
+        val balance = getYearlyBalances(taxYear)
+            .merge(op.outgoingAsset, op.outgoingAmount, BigDecimal::subtract)!!
+        //If -ea is not set, then the program continues, but consistency is questionable
+        //Tests on real life data will tell if this situation is possible
+        assert(verifyBalance(balance, op)) { "Balance is negative ($balance) after $op" }
 
-        var opAmount = op.sellAmount
+        var opAmount = op.outgoingAmount
         var capital = BigDecimal.ZERO
         var opCapital = op.capital
         val iterator = soldBalance.entries.iterator()
@@ -90,12 +113,12 @@ class Account() {
                         if (opLeftover.signum() == 0) opCapital else (bucket.amount * opCapital) / opAmount
 
                     //The leftover from the operation capital after selling the bucket,
-                    //the rest will be used for the next buckets
+                    //the rest will be used for more buckets
                     opCapital -= iterationCapital
 
                     iterationGain = iterationCapital - bucket.capital
 
-                    assert(opCapital.signum() >= 0) { "Operation capital cannot be negative" }
+                    assert(opCapital.signum() >= 0) { "Operation capital cannot be negative $op" }
 
                     //The leftover from the operation after selling the bucket,
                     //the rest must be taken from the next buckets
@@ -117,49 +140,68 @@ class Account() {
                     capital += opCapital
                 }
 
-                val taxYear: Int = getTaxYear(op.date())
-                when {
-                    iterationGain.signum() < 0
-                    -> loss.merge(taxYear, iterationGain, BigDecimal::add)
-                    //The purchase date is a year before the sale date
-                    balanceDate.isBefore(op.date().minusYears(1))
-                    -> gainDiscounted.merge(taxYear, iterationGain, BigDecimal::add)
+                //Delete the date if there is no balance left on it
+                if (balancesOnDate.isEmpty()) iterator.remove()
 
-                    else -> gain.merge(taxYear, iterationGain, BigDecimal::add)
+                when {
+                    iterationGain.signum() < 0 -> {
+                        loss.computeIfAbsent(taxYear) { HashMap() }
+                            .merge(op.outgoingAsset, iterationGain, BigDecimal::add)
+
+                        lossTotal.merge(taxYear, iterationGain, BigDecimal::add)
+                    }
+
+                    //The purchase date is more than a year before the sale date
+                    balanceDate.isBefore(op.date.minusYears(1)) -> {
+                        gainDiscounted.computeIfAbsent(taxYear) { HashMap() }
+                            .merge(op.outgoingAsset, iterationGain, BigDecimal::add)
+
+                        gainDiscountedTotal.merge(taxYear, iterationGain, BigDecimal::add)
+                    }
+
+                    else -> {
+                        gain.computeIfAbsent(taxYear) { HashMap() }
+                            .merge(op.outgoingAsset, iterationGain, BigDecimal::add)
+
+                        gainTotal.merge(taxYear, iterationGain, BigDecimal::add)
+                    }
                 }
             }
-            //Delete the date if there is no balance left on it
-            if (balancesOnDate.isEmpty()) iterator.remove()
+
         }
 
         //Verify that the operation has zero-sum
         val error = capital - op.capital
-        if (error.abs() > EPSILON) {
-            errorLog += ErrorLog(
-                String.format("Capital error: %1g, after operation selling %2s for %3s", error, op.sell, op.buy), op
-            )
+        if (error.abs() > ERROR_THRESHOLD) {
+            logger.error { "Capital error: $error, after selling ${op.outgoingAsset} for ${op.incomingAsset}" }
         }
     }
 
     /**
      * Register a "receive" transfer operation in the account
      */
-    fun processReceive(op: ReceiveLog) {
+    override fun register(op: ReceiveLog) {
         verifySequenceConsistency(op)
-        registerIncoming(op);
+        registerIncoming(op)
     }
 
     /**
      * Register a send transfer operation in the account.
-     * Sending is like selling, but gain/loss is not acquired.
+     * Sending is like selling, but gain/loss is not calculated.
+     *
+     * To be precise, any disposal of an asset is a taxable event, unless sending to self.
+     * Since the crypto exchange does not know the purpose of the transfer, they don't even try
+     * to calculate taxes. As I know exactly that I am only sending to myself,
+     * I can ignore the taxable event as long as it is my toy project.
      */
-    fun processSendFiFo(op: SendLog) {
+    override fun register(op: SendLog) {
         verifySequenceConsistency(op)
 
-        val sentBalance = account[op.coin] ?: throw TradeOperationLogException("No balance to send $op", op)
+        val sentBalance = account[op.outgoingAsset] ?: throw TradeOperationLogException("No balance to send $op", op)
 
-        //We sent a coin, subtract from the total balance for the year of the sending event
-        val balance = getYearlyBalances(op.timestamp.year).merge(op.coin, op.amount, BigDecimal::subtract)
+        //We sent a coin, subtract from the total balance for the financial year of the sending event
+        val balance = getYearlyBalances(getTaxYear(op.timestamp))
+            .merge(op.outgoingAsset, op.amount, BigDecimal::subtract)!!
         assert(verifyBalance(balance, op)) { "Balance is negative after $op" }
 
         var opAmount = op.amount
@@ -193,23 +235,26 @@ class Account() {
     }
 
     private fun registerIncoming(op: IncomingLog) {
-        val balance = getCoinBalance(op.incomingCoin())
-        balance.computeIfAbsent(op.date()) { k -> ArrayList() }.add(CapitalAmount(op.capital, op.incomingAmount()))
-        getYearlyBalances(op.timestamp.year).merge(op.incomingCoin(), op.incomingAmount(), BigDecimal::add)
+        val balance = getCoinBalance(op.incomingAsset)
+        balance.computeIfAbsent(op.date) { k -> ArrayList() }.add(CapitalAmount(op.capital, op.incomingAmount))
+        getYearlyBalances(getTaxYear(op.timestamp)).merge(op.incomingAsset, op.incomingAmount, BigDecimal::add)
     }
 
-    private fun getCoinBalance(coin: String): SortedMap<LocalDate, MutableList<CapitalAmount>>
-        = account.computeIfAbsent(coin) { k -> TreeMap() }
+    private fun getCoinBalance(coin: AssetType): SortedMap<LocalDate, MutableList<CapitalAmount>> =
+        account.computeIfAbsent(coin) { k -> TreeMap() }
 
     private fun verifySequenceConsistency(op: OrderedLog) {
         if (op.timestamp.isBefore(lastDate)) {
-            throw TradeOperationLogException("Trade operation is out of order $op", op)
+            throw TradeOperationLogException(
+                "Trade operation $op is out of order. Last operation timestamp $lastDate",
+                op
+            )
         }
         lastDate = op.timestamp
     }
 
-    internal fun getYearlyBalances(year: Int): MutableMap<String, BigDecimal> {
-        //First operation in a new year finalises balances for the previous year, copying them over
+    internal fun getYearlyBalances(year: Int): MutableMap<AssetType, BigDecimal> {
+        //First operation in a new financial year finalises balances for the previous year, copying them over
         return balances.getOrPut(year) {
             if (balances.isEmpty()) HashMap()
             else HashMap(getYearlyBalances(year - 1))
@@ -218,35 +263,29 @@ class Account() {
 
     /**
      * Verify that the balance is not negative. If it is, log an error.
-     * Balance may become nagative if the log is incomplete, e.g. if the log does not contain all the trades and transfers
+     * Balance may become negative if the log is incomplete, e.g. if the log does not contain all the trades and transfers,
+     * or due to rounding errors.
      * @return true if the balance is valid, false otherwise
      */
-    private fun verifyBalance(balance: BigDecimal?, op: OrderedLog): Boolean {
-        return if (balance!!.signum() >= 0) true
+    private fun verifyBalance(balance: BigDecimal, op: OrderedLog): Boolean {
+        return if (balance.signum() >= 0) true
         else {
-            errorLog += ErrorLog("Negative balance $balance, after operation: $op", op)
-            false
+            val message = "Negative balance $balance, after operation: $op"
+            if (balance.abs() < ERROR_THRESHOLD) {
+                logger.warn(message)
+                true
+            } else {
+                logger.error(message)
+                false
+            }
         }
     }
 
-    private fun getTaxYear(date: LocalDate): Int {
-        return if (date.month < Month.JULY) date.year else date.year + 1
-    }
-
-    private companion object {
-        val EPSILON = BigDecimal("1e-8")
-    }
+    /**
+     * Get the tax year for the given date. In Australia financial year starts on 1 July.
+     */
+    private fun getTaxYear(date: ZonedDateTime) = if (date.month < Month.JULY) date.year else date.year + 1
 
     private data class CapitalAmount(var capital: BigDecimal, var amount: BigDecimal)
 
-    /**
-     * Log of errors that occurred during the processing of the trade operations
-     *
-     * @consider adding error type/code
-     *
-     * @param error error message
-     * @param op operation that caused the error
-     */
-    @JvmRecord
-    data class ErrorLog(val error: String, val op: OrderedLog)
 }

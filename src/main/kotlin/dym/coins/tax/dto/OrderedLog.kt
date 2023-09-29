@@ -7,7 +7,10 @@ import java.time.ZonedDateTime
  * @author dym
  * Date: 24.09.2023
  */
-interface OrderedLog {
+interface OrderedLog: Comparable<OrderedLog>{
     val timestamp: ZonedDateTime
-    fun date(): LocalDate = timestamp.toLocalDate()
+    val date: LocalDate
+        get() = timestamp.toLocalDate()
+
+    override fun compareTo(other: OrderedLog) = timestamp.compareTo(other.timestamp)
 }

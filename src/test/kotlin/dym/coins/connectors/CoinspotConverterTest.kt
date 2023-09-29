@@ -2,6 +2,7 @@ package dym.coins.connectors
 
 import dym.coins.coinspot.api.resource.OperationType
 import dym.coins.coinspot.api.resource.OrderHistoryResponse
+import dym.coins.tax.domain.AssetType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -38,10 +39,10 @@ class CoinspotConverterTest {
         println(logOp)
 
         with(logOp) {
-            assertTrue(buy == "POE")
-            assertTrue(sell == "AUD")
-            assertEquals(LocalDate.parse("2018-01-19"), date())
-            assertEquals(capital, (rate * buyAmount).setScale(2, RoundingMode.HALF_EVEN))
+            assertTrue(incomingAsset == AssetType.of("POE"))
+            assertTrue(outgoingAsset == AssetType.of("AUD"))
+            assertEquals(LocalDate.parse("2018-01-19"), date)
+            assertEquals(capital, (rate * incomingAmount).setScale(2, RoundingMode.HALF_EVEN))
         }
     }
 
@@ -67,20 +68,13 @@ class CoinspotConverterTest {
         println(logOp)
 
         with(logOp) {
-            assertTrue(buy == "AUD")
-            assertTrue(sell == "LOOM")
-            assertEquals(LocalDate.parse("2023-09-20"), date())
+            assertTrue(incomingAsset== AssetType.of("AUD"))
+            assertTrue(outgoingAsset == AssetType.of("LOOM"))
+            assertEquals(LocalDate.parse("2023-09-20"), date)
             //When selling a coin for AUD, i.e. buying AUD for a coin, capital is equal to the rounded purchase amount
-            assertEquals(capital, buyAmount.setScale(2, RoundingMode.HALF_EVEN))
+            assertEquals(capital, incomingAmount.setScale(2, RoundingMode.HALF_EVEN))
         }
 
-
     }
 
-    @Test
-    fun justForFun() {
-        println("10.000".toBigDecimal() * "10".toBigDecimal())
-        println("10".toBigDecimal() * "10.000".toBigDecimal())
-        println("10.0000".toBigDecimal() / "3.000".toBigDecimal())
-    }
 }

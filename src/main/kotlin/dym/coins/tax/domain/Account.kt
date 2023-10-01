@@ -14,10 +14,18 @@ import java.time.LocalDate
 import java.time.Month
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.PriorityQueue
 import java.util.SortedMap
 import java.util.TreeMap
 
 /**
+ * Balance tracking and tax calculation using FIFO method for all assets.
+ * The implementation is not thread-safe. All operations must be registered in chronological order.
+ * Parallel processing is challenging, because swap operations (which are regular buy/sell in Coinspot API)
+ * require that all operations involving the asset being sold and preceding the swap operation are processed first.
+ * Also, all operations in a financial year must be processed before the first operation in the next financial year.
+ * Maybe, multithreading support will be implemented in the future :-)
+ *
  * @author dym
  * Date: 19.09.2023
  */
@@ -58,17 +66,19 @@ class Account() : Registry {
     /**
      * Map of coin -> date -> list of buy buckets with corresponding rates
      */
-    private val account: MutableMap<AssetType, SortedMap<LocalDate, MutableList<CapitalAmount>>> = HashMap()
+    private val account: MutableMap<AssetType, PriorityQueue<AssetBucket>> = HashMap()
 
     val balances: SortedMap<Int, MutableMap<AssetType, BigDecimal>> = TreeMap()
 
     private var lastDate: ZonedDateTime = Instant.ofEpochMilli(0).atZone(ZoneId.of("UTC"))
 
+    private var taxYear = 0
+
     /**
      * Register a trade operation in the account.
      */
     override fun register(op: TradeLog) {
-        verifySequenceConsistency(op)
+        ensureSequenceConsistency(op)
 
         if (AssetType.AUD == op.incomingAsset) { //We sold a coin for fiat
             processSell(op)
@@ -80,108 +90,11 @@ class Account() : Registry {
         }
     }
 
-    private fun processSell(op: TradeLog) {
-        //The balance of the sold coin at the time of the trading event
-        val soldBalance = account[op.outgoingAsset] ?: throw TradeOperationLogException("No balance to sell $op", op)
-
-        //We sold a coin, subtract from the total balance for the financial year of the sale
-        val taxYear = getTaxYear(op.timestamp)
-        val balance = getYearlyBalances(taxYear)
-            .merge(op.outgoingAsset, op.outgoingAmount, BigDecimal::subtract)!!
-        //If -ea is not set, then the program continues, but consistency is questionable
-        //Tests on real life data will tell if this situation is possible
-        assert(verifyBalance(balance, op)) { "Balance is negative ($balance) after $op" }
-
-        var opAmount = op.outgoingAmount
-        var capital = BigDecimal.ZERO
-        var opCapital = op.capital
-        val iterator = soldBalance.entries.iterator()
-
-        while (iterator.hasNext() && opAmount != BigDecimal.ZERO) {
-            val (balanceDate, balancesOnDate) = iterator.next()
-            val dailyBalancesIter = balancesOnDate.listIterator()
-
-            while (dailyBalancesIter.hasNext() && opAmount != BigDecimal.ZERO) {
-                var iterationCapital: BigDecimal
-                var iterationGain: BigDecimal
-                val bucket = dailyBalancesIter.next()
-
-                val opLeftover = bucket.amount - opAmount
-
-                if (opLeftover.signum() <= 0) {    //It means that the bucket was not enough (or exactly enough)
-                    iterationCapital =
-                        if (opLeftover.signum() == 0) opCapital else (bucket.amount * opCapital) / opAmount
-
-                    //The leftover from the operation capital after selling the bucket,
-                    //the rest will be used for more buckets
-                    opCapital -= iterationCapital
-
-                    iterationGain = iterationCapital - bucket.capital
-
-                    assert(opCapital.signum() >= 0) { "Operation capital cannot be negative $op" }
-
-                    //The leftover from the operation after selling the bucket,
-                    //the rest must be taken from the next buckets
-                    opAmount = opLeftover.negate()
-
-                    //The whole bucket balance is spent on the operation
-                    dailyBalancesIter.remove()
-
-                    //For verification purposes
-                    capital += iterationCapital
-                } else {    //The bucket covered the whole operation
-                    val usedBucketCapital = (opAmount * bucket.capital) / bucket.amount
-                    bucket.capital -= usedBucketCapital
-                    bucket.amount = opLeftover
-                    iterationGain = opCapital - usedBucketCapital
-                    opAmount = BigDecimal.ZERO
-
-                    //For verification purposes
-                    capital += opCapital
-                }
-
-                //Delete the date if there is no balance left on it
-                if (balancesOnDate.isEmpty()) iterator.remove()
-
-                when {
-                    iterationGain.signum() < 0 -> {
-                        loss.computeIfAbsent(taxYear) { HashMap() }
-                            .merge(op.outgoingAsset, iterationGain, BigDecimal::add)
-
-                        lossTotal.merge(taxYear, iterationGain, BigDecimal::add)
-                    }
-
-                    //The purchase date is more than a year before the sale date
-                    balanceDate.isBefore(op.date.minusYears(1)) -> {
-                        gainDiscounted.computeIfAbsent(taxYear) { HashMap() }
-                            .merge(op.outgoingAsset, iterationGain, BigDecimal::add)
-
-                        gainDiscountedTotal.merge(taxYear, iterationGain, BigDecimal::add)
-                    }
-
-                    else -> {
-                        gain.computeIfAbsent(taxYear) { HashMap() }
-                            .merge(op.outgoingAsset, iterationGain, BigDecimal::add)
-
-                        gainTotal.merge(taxYear, iterationGain, BigDecimal::add)
-                    }
-                }
-            }
-
-        }
-
-        //Verify that the operation has zero-sum
-        val error = capital - op.capital
-        if (error.abs() > ERROR_THRESHOLD) {
-            logger.error { "Capital error: $error, after selling ${op.outgoingAsset} for ${op.incomingAsset}" }
-        }
-    }
-
     /**
      * Register a "receive" transfer operation in the account
      */
     override fun register(op: ReceiveLog) {
-        verifySequenceConsistency(op)
+        ensureSequenceConsistency(op)
         registerIncoming(op)
     }
 
@@ -195,62 +108,157 @@ class Account() : Registry {
      * I can ignore the taxable event as long as it is my toy project.
      */
     override fun register(op: SendLog) {
-        verifySequenceConsistency(op)
+        ensureSequenceConsistency(op)
 
         val sentBalance = account[op.outgoingAsset] ?: throw TradeOperationLogException("No balance to send $op", op)
 
         //We sent a coin, subtract from the total balance for the financial year of the sending event
-        val balance = getYearlyBalances(getTaxYear(op.timestamp))
+        val balance = getYearlyBalances(taxYear)
             .merge(op.outgoingAsset, op.amount, BigDecimal::subtract)!!
         assert(verifyBalance(balance, op)) { "Balance is negative after $op" }
 
         var opAmount = op.amount
-        val iterator = sentBalance.entries.iterator()
 
-        while (iterator.hasNext() && opAmount != BigDecimal.ZERO) {
-            val (_, balancesOnDate) = iterator.next()
-            val dailyBalancesIter = balancesOnDate.listIterator()
+        while (sentBalance.isNotEmpty() && opAmount != BigDecimal.ZERO) {
+            val bucket = sentBalance.peek()
 
-            while (dailyBalancesIter.hasNext() && opAmount != BigDecimal.ZERO) {
-                val bucket = dailyBalancesIter.next()
+            val opLeftover = bucket.amount - opAmount
 
-                val opLeftover = bucket.amount - opAmount
+            if (opLeftover.signum() <= 0) {    //It means that the bucket was not enough (or exactly enough)
+                //The leftover from the operation after sending the bucket,
+                //the rest must be taken from the next buckets
+                opAmount = opLeftover.abs()
 
-                if (opLeftover.signum() <= 0) {    //It means that the bucket was not enough (or exactly enough)
-                    //The leftover from the operation after sending the bucket,
-                    //the rest must be taken from the next buckets
-                    opAmount = opLeftover.negate()
-
-                    //The whole bucket balance is spent on the operation
-                    dailyBalancesIter.remove()
-                } else {    //The bucket covered the whole operation
-                    bucket.capital = (opLeftover * bucket.capital) / bucket.amount
-                    bucket.amount = opLeftover
-                    opAmount = BigDecimal.ZERO
-                }
+                //The whole bucket balance is spent on the operation
+                sentBalance.remove()
+            } else {    //The bucket covered the whole operation
+                bucket.capital = (opLeftover * bucket.capital) / bucket.amount
+                bucket.amount = opLeftover
+                opAmount = BigDecimal.ZERO
             }
-            //Delete the date if there is no balance left on it
-            if (balancesOnDate.isEmpty()) iterator.remove()
+        }
+
+        if (opAmount > ERROR_THRESHOLD) {
+            throw TradeOperationLogException("Insufficient ($opAmount) balance to send $op", op)
         }
     }
 
-    private fun registerIncoming(op: IncomingLog) {
-        val balance = getCoinBalance(op.incomingAsset)
-        balance.computeIfAbsent(op.date) { k -> ArrayList() }.add(CapitalAmount(op.capital, op.incomingAmount))
-        getYearlyBalances(getTaxYear(op.timestamp)).merge(op.incomingAsset, op.incomingAmount, BigDecimal::add)
+
+    private fun processSell(op: TradeLog) {
+        //The balance of the sold coin at the time of the trading event
+        val soldBalance = account[op.outgoingAsset] ?: throw TradeOperationLogException("No balance to sell $op", op)
+
+        //We sold a coin, subtract from the total balance for the financial year of the sale
+        val balance = getYearlyBalances(taxYear)
+            .merge(op.outgoingAsset, op.outgoingAmount, BigDecimal::subtract)!!
+        //If -ea is not set, then the program continues, but consistency is questionable
+        //Tests on real life data will tell if this situation is possible
+        assert(verifyBalance(balance, op)) { "Balance is negative ($balance) after $op" }
+
+        var opAmount = op.outgoingAmount
+        var capital = BigDecimal.ZERO
+        var opCapital = op.capital
+
+        while (soldBalance.isNotEmpty() && opAmount != BigDecimal.ZERO) {
+            val bucket = soldBalance.peek()
+            var iterationCapital: BigDecimal
+            var iterationGain: BigDecimal
+
+            val opLeftover = bucket.amount - opAmount
+
+            if (opLeftover.signum() <= 0) {    //It means that the bucket was not enough (or exactly enough)
+                iterationCapital =
+                    if (opLeftover.signum() == 0) opCapital else (bucket.amount * opCapital) / opAmount
+
+                //The leftover from the operation capital after selling the bucket,
+                //the rest will be used for more buckets
+                opCapital -= iterationCapital
+
+                iterationGain = iterationCapital - bucket.capital
+
+                assert(opCapital.signum() >= 0) { "Operation capital cannot be negative $op" }
+
+                //The leftover from the operation after selling the bucket,
+                //the rest must be taken from the next buckets
+                opAmount = opLeftover.abs()
+
+                //The whole bucket balance is spent on the operation
+                soldBalance.remove()
+
+                //For verification purposes
+                capital += iterationCapital
+            } else {    //The bucket covered the whole operation
+                val usedBucketCapital = (opAmount * bucket.capital) / bucket.amount
+                bucket.capital -= usedBucketCapital
+                bucket.amount = opLeftover
+                iterationGain = opCapital - usedBucketCapital
+                opAmount = BigDecimal.ZERO
+
+                //For verification purposes
+                capital += opCapital
+            }
+
+            when {
+                iterationGain.signum() < 0 -> registerLoss(op.outgoingAsset, iterationGain)
+
+                //The purchase date is more than a year before the sale date
+                bucket.date.isBefore(op.date.minusYears(1)) ->
+                    registeredGainDiscounted(op.outgoingAsset, iterationGain)
+
+                else -> registerGain(op.outgoingAsset, iterationGain)
+            }
+
+        }
+
+        if (opAmount > ERROR_THRESHOLD) {
+            throw TradeOperationLogException("Insufficient ($opAmount) balance to sell $op", op)
+        }
+
+        //Verify that the operation has zero-sum
+        val error = capital - op.capital
+        if (error.abs() > ERROR_THRESHOLD) {
+            logger.error { "Capital error: $error, after selling ${op.outgoingAsset} for ${op.incomingAsset}" }
+        }
     }
 
-    private fun getCoinBalance(coin: AssetType): SortedMap<LocalDate, MutableList<CapitalAmount>> =
-        account.computeIfAbsent(coin) { k -> TreeMap() }
+    private fun registerGain(asset: AssetType, iterationGain: BigDecimal) {
+        gain.computeIfAbsent(taxYear) { HashMap() }
+            .merge(asset, iterationGain, BigDecimal::add)
 
-    private fun verifySequenceConsistency(op: OrderedLog) {
+        gainTotal.merge(taxYear, iterationGain, BigDecimal::add)
+    }
+
+    private fun registeredGainDiscounted(asset: AssetType, iterationGain: BigDecimal) {
+        gainDiscounted.computeIfAbsent(taxYear) { HashMap() }
+            .merge(asset, iterationGain, BigDecimal::add)
+
+        gainDiscountedTotal.merge(taxYear, iterationGain, BigDecimal::add)
+    }
+
+    private fun registerLoss(asset: AssetType, iterationGain: BigDecimal) {
+        loss.computeIfAbsent(taxYear) { HashMap() }
+            .merge(asset, iterationGain, BigDecimal::add)
+
+        lossTotal.merge(taxYear, iterationGain, BigDecimal::add)
+    }
+
+
+    private fun registerIncoming(op: IncomingLog) {
+        getCoinBalance(op.incomingAsset).add(AssetBucket.of(op))
+        getYearlyBalances(taxYear).merge(op.incomingAsset, op.incomingAmount, BigDecimal::add)
+    }
+
+    private fun getCoinBalance(assetType: AssetType): PriorityQueue<AssetBucket> =
+        account.computeIfAbsent(assetType) { k -> PriorityQueue(AssetBucket.comparatorFIFO) }
+
+    private fun ensureSequenceConsistency(op: OrderedLog) {
         if (op.timestamp.isBefore(lastDate)) {
             throw TradeOperationLogException(
-                "Trade operation $op is out of order. Last operation timestamp $lastDate",
-                op
+                "Trade operation $op is out of order. Last operation timestamp $lastDate", op
             )
         }
         lastDate = op.timestamp
+        taxYear = getTaxYear(op.timestamp)
     }
 
     internal fun getYearlyBalances(year: Int): MutableMap<AssetType, BigDecimal> {
@@ -286,6 +294,17 @@ class Account() : Registry {
      */
     private fun getTaxYear(date: ZonedDateTime) = if (date.month < Month.JULY) date.year else date.year + 1
 
-    private data class CapitalAmount(var capital: BigDecimal, var amount: BigDecimal)
+    private data class AssetBucket(var capital: BigDecimal, var amount: BigDecimal, val date: LocalDate) {
+        val rate: BigDecimal = capital / amount
+
+        companion object {
+            fun of(incomingLog: IncomingLog) =
+                AssetBucket(incomingLog.capital, incomingLog.incomingAmount, incomingLog.date)
+
+            val comparatorFIFO = Comparator.comparing(AssetBucket::date)
+            val comparatorLIFO = Comparator.comparing(AssetBucket::date).reversed()
+            val comparatorHIFO = Comparator.comparing(AssetBucket::rate).reversed()
+        }
+    }
 
 }

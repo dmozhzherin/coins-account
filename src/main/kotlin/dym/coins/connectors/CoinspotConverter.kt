@@ -2,6 +2,7 @@ package dym.coins.connectors
 
 import dym.coins.coinspot.api.resource.OrderHistoryResponse.TradeOperation
 import dym.coins.coinspot.api.resource.TransfersHistoryResponse
+import dym.coins.tax.Config
 import dym.coins.tax.Config.Companion.DEFAULT_TIMEZONE
 import dym.coins.tax.domain.AssetType
 import dym.coins.tax.dto.ReceiveLog
@@ -9,7 +10,7 @@ import dym.coins.tax.dto.SendLog
 import dym.coins.tax.dto.TradeLog
 import dym.coins.tax.extensions.normalize
 import dym.coins.tax.extensions.toCurrency
-import java.math.MathContext
+import java.math.BigDecimal
 import java.time.ZoneId
 
 /**
@@ -38,7 +39,7 @@ class CoinspotConverter (private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZ
             incomingAmount = tradeOp.total.normalize(),
             outgoingAsset = AssetType.of(tradeOp.coin),
             outgoingAmount = tradeOp.amount.normalize(),
-            rate = tradeOp.rate.pow(-1, MathContext.DECIMAL128).normalize(),
+            rate = BigDecimal.ONE.normalize().divide(tradeOp.rate, Config.DEFAULT_ROUNDING_MODE),
             fee = tradeOp.audfeeExGst.add(tradeOp.audGst).normalize(),
             capital = tradeOp.audtotal.toCurrency()
         )

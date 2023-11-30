@@ -12,7 +12,7 @@
     <name>Tax calculator for Coinspot</name>
 
     <properties>
-        <revision>0.1.0</revision>
+        <revision>0.1.1</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <kotlin.code.style>official</kotlin.code.style>
         <kotlin.compiler.jvmTarget>17</kotlin.compiler.jvmTarget>
@@ -73,7 +73,7 @@
         <dependency>
             <groupId>dym.coins.connectors</groupId>
             <artifactId>coinspot-client</artifactId>
-            <version>0.1.0</version>
+            <version>0.2.0</version>
         </dependency>
 
         <dependency>
@@ -106,7 +106,7 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.4.8</version>
+            <version>1.4.13</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

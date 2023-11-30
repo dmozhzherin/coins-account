@@ -2,11 +2,11 @@ package dym.coins.connectors
 
 import dym.coins.coinspot.api.resource.OperationType
 import dym.coins.coinspot.api.resource.OrderHistoryResponse
+import dym.coins.tax.Config
 import dym.coins.tax.domain.AssetType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.math.RoundingMode
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -42,7 +42,7 @@ class CoinspotConverterTest {
             assertTrue(incomingAsset == AssetType.of("POE"))
             assertTrue(outgoingAsset == AssetType.of("AUD"))
             assertEquals(LocalDate.parse("2018-01-19"), date)
-            assertEquals(capital, (rate * incomingAmount).setScale(2, RoundingMode.HALF_EVEN))
+            assertEquals(capital, (rate * incomingAmount).setScale(2, Config.DEFAULT_ROUNDING_MODE))
         }
     }
 
@@ -72,7 +72,7 @@ class CoinspotConverterTest {
             assertTrue(outgoingAsset == AssetType.of("LOOM"))
             assertEquals(LocalDate.parse("2023-09-20"), date)
             //When selling a coin for AUD, i.e. buying AUD for a coin, capital is equal to the rounded purchase amount
-            assertEquals(capital, incomingAmount.setScale(2, RoundingMode.HALF_EVEN))
+            assertEquals(capital, incomingAmount.setScale(2, Config.DEFAULT_ROUNDING_MODE))
         }
 
     }

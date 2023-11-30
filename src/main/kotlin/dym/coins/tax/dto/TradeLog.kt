@@ -4,7 +4,6 @@ import dym.coins.tax.domain.AssetType
 import dym.coins.tax.domain.Registry
 import dym.coins.tax.extensions.normalize
 import java.math.BigDecimal
-import java.math.MathContext
 import java.time.ZonedDateTime
 
 /**
@@ -64,12 +63,12 @@ data class TradeLog(
         ) = TradeLog(
             ZonedDateTime.parse(timestamp),
             AssetType.of(buy),
-            buyAmount.toBigDecimal(MathContext.DECIMAL128).normalize(),
+            buyAmount.toBigDecimal().normalize(),
             AssetType.of(sell),
-            sellAmount.toBigDecimal(MathContext.DECIMAL128).normalize(),
-            rate.toBigDecimal(MathContext.DECIMAL128).normalize(),
-            fee.toBigDecimal(MathContext.DECIMAL128).normalize(),
-            capital.toBigDecimal(MathContext.DECIMAL128).normalize()
+            sellAmount.toBigDecimal().normalize(),
+            rate.toBigDecimal().normalize(),
+            fee.toBigDecimal().normalize(),
+            capital.toBigDecimal().normalize()
         )
     }
 }

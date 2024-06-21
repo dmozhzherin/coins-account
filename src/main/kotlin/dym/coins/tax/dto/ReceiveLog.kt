@@ -1,6 +1,6 @@
 package dym.coins.tax.dto
 
-import dym.coins.tax.domain.AssetType
+import dym.coins.coinspot.domain.AssetType
 import dym.coins.tax.domain.Registry
 import dym.coins.tax.extensions.normalize
 import java.math.BigDecimal

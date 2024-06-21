@@ -1,5 +1,6 @@
 package dym.coins.tax.domain
 
+import dym.coins.coinspot.domain.AssetType
 import dym.coins.exceptions.TradeOperationLogException
 import dym.coins.tax.dto.ReceiveLog
 import dym.coins.tax.dto.SendLog

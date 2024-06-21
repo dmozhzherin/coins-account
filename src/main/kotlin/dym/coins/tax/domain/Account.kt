@@ -1,78 +1,84 @@
 package dym.coins.tax.domain
 
+import dym.coins.coinspot.domain.AssetType
 import dym.coins.exceptions.TradeOperationLogException
+import dym.coins.tax.Config.Companion.DEFAULT_TIMEZONE
 import dym.coins.tax.Config.Companion.ERROR_THRESHOLD
-import dym.coins.tax.dto.IncomingLog
-import dym.coins.tax.dto.OrderedLog
-import dym.coins.tax.dto.ReceiveLog
-import dym.coins.tax.dto.SendLog
-import dym.coins.tax.dto.TradeLog
+import dym.coins.tax.dto.*
 import mu.KotlinLogging
 import java.math.BigDecimal
-import java.time.Instant
-import java.time.LocalDate
-import java.time.Month
-import java.time.ZoneId
-import java.time.ZonedDateTime
-import java.util.PriorityQueue
-import java.util.SortedMap
-import java.util.TreeMap
+import java.time.*
+import java.util.*
 
 /**
  * Balance tracking and tax calculation using FIFO method for all assets.
  * The implementation is not thread-safe. All operations must be registered in chronological order.
  * Parallel processing is challenging, because swap operations (which are regular buy/sell in Coinspot API)
- * require that all operations involving the asset being sold and preceding the swap operation are processed first.
+ * require that all operations involving the asset being sold, preceding the swap operation are processed first.
  * Also, all operations in a financial year must be processed before the first operation in the next financial year.
  * Maybe, multithreading support will be implemented in the future :-)
  *
  * @author dym
  * Date: 19.09.2023
  */
-class Account() : Registry {
+class Account(timeZone: String = DEFAULT_TIMEZONE) : Registry {
+
+    private val timeZone = TimeZone.getTimeZone(timeZone).toZoneId()
 
     private val logger = KotlinLogging.logger {}
 
     /**
      * Income on coins held for less than a year
      */
-    val gain: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
+    private val gain: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
 
     /**
      * Total income on coins held for less than a year
      */
-    val gainTotal: MutableMap<Int, BigDecimal> = HashMap()
+    private val gainTotal: MutableMap<Int, BigDecimal> = HashMap()
 
     /**
      * Income on coins held for more than a year
      */
-    val gainDiscounted: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
+    private val gainDiscounted: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
 
     /**
      * Total income on coins held for more than a year
      */
-    val gainDiscountedTotal: MutableMap<Int, BigDecimal> = HashMap()
+    private val gainDiscountedTotal: MutableMap<Int, BigDecimal> = HashMap()
 
     /**
      * Loss on coins
      */
-    val loss: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
+    private val loss: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = HashMap()
 
     /**
-     * Total loss on coins
+     * Total loss on coins by year
      */
-    val lossTotal: MutableMap<Int, BigDecimal> = HashMap()
+    private val lossTotal: MutableMap<Int, BigDecimal> = HashMap()
 
     /**
      * Map of coin -> date -> list of buy buckets with corresponding rates
      */
     private val account: MutableMap<AssetType, PriorityQueue<AssetBucket>> = HashMap()
 
-    val balances: SortedMap<Int, MutableMap<AssetType, BigDecimal>> = TreeMap()
+    private val balances: MutableMap<Int, MutableMap<AssetType, BigDecimal>> = TreeMap()
 
-    private var lastDate: ZonedDateTime = Instant.ofEpochMilli(0).atZone(ZoneId.of("UTC"))
+    var lastDate: ZonedDateTime = Instant.ofEpochMilli(0).atZone(ZoneId.of("UTC"))
+        private set
 
     private var taxYear = 0
+
+
+    /**
+     * Get latest balance of asset for the current tax year
+     */
+    fun balance(asset: AssetType) = balance(asset, getTaxYear(ZonedDateTime.now(timeZone)))
+
+    /**
+     * Get latest balance of asset for the given tax year
+     */
+    fun balance(asset: AssetType, year: Int) = balances[year]?.get(asset)
 
     /**
      * Register a trade operation in the account.
@@ -80,11 +86,11 @@ class Account() : Registry {
     override fun register(op: TradeLog) {
         ensureSequenceConsistency(op)
 
-        if (AssetType.AUD == op.incomingAsset) { //We sold a coin for fiat
+        if (op.incomingAsset.isFiat) { //We sold a coin for fiat
             processSell(op)
         } else {    //We bought a coin, add to the balance for the purchase date
             registerIncoming(op)
-            if (AssetType.AUD != op.outgoingAsset) {    //The coin was bought for another coin, which was sold
+            if (!op.outgoingAsset.isFiat) {    //The coin was bought for another coin, which was sold
                 processSell(op)
             }
         }
@@ -106,6 +112,8 @@ class Account() : Registry {
      * Since the crypto exchange does not know the purpose of the transfer, they don't even try
      * to calculate taxes. As I know exactly that I am only sending to myself,
      * I can ignore the taxable event as long as it is my toy project.
+     *
+     * P.S. Even if sending to self, gain/loss on fees must be calculated
      */
     override fun register(op: SendLog) {
         ensureSequenceConsistency(op)
@@ -115,6 +123,7 @@ class Account() : Registry {
         //We sent a coin, subtract from the total balance for the financial year of the sending event
         val balance = getYearlyBalances(taxYear)
             .merge(op.outgoingAsset, op.amount, BigDecimal::subtract)!!
+
         assert(verifyBalance(balance, op)) { "Balance is negative after $op" }
 
         var opAmount = op.amount
@@ -262,7 +271,7 @@ class Account() : Registry {
     }
 
     internal fun getYearlyBalances(year: Int): MutableMap<AssetType, BigDecimal> {
-        //First operation in a new financial year finalises balances for the previous year, copying them over
+        //First operation in a new financial year finalises balances for the previous year copying them over
         return balances.getOrPut(year) {
             if (balances.isEmpty()) HashMap()
             else HashMap(getYearlyBalances(year - 1))
@@ -275,10 +284,10 @@ class Account() : Registry {
      * or due to rounding errors.
      * @return true if the balance is valid, false otherwise
      */
-    private fun verifyBalance(balance: BigDecimal, op: OrderedLog): Boolean {
-        return if (balance.signum() >= 0) true
+    private fun verifyBalance(balance: BigDecimal, op: OrderedLog): Boolean =
+        if (balance.signum() >= 0) true
         else {
-            val message = "Negative balance $balance, after operation: $op"
+            val message = { "Negative balance $balance, after operation: $op" }
             if (balance.abs() < ERROR_THRESHOLD) {
                 logger.warn(message)
                 true
@@ -287,10 +296,10 @@ class Account() : Registry {
                 false
             }
         }
-    }
+
 
     /**
-     * Get the tax year for the given date. In Australia financial year starts on 1 July.
+     * Get the tax year for the given date. In Australia financial year starts on July 1.
      */
     private fun getTaxYear(date: ZonedDateTime) = if (date.month < Month.JULY) date.year else date.year + 1
 

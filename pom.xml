@@ -75,7 +75,7 @@
         <dependency>
             <groupId>dym.coins.connectors</groupId>
             <artifactId>coinspot-client</artifactId>
-            <version>0.2.0</version>
+            <version>0.4.2</version>
         </dependency>
 
         <dependency>

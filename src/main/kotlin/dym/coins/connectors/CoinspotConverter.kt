@@ -1,10 +1,10 @@
 package dym.coins.connectors
 
-import dym.coins.coinspot.api.resource.OrderHistoryResponse.TradeOperation
-import dym.coins.coinspot.api.resource.TransfersHistoryResponse
+import dym.coins.coinspot.api.dto.TradeOperation
+import dym.coins.coinspot.api.dto.TransferOperation
+import dym.coins.coinspot.domain.AssetType
 import dym.coins.tax.Config
 import dym.coins.tax.Config.Companion.DEFAULT_TIMEZONE
-import dym.coins.tax.domain.AssetType
 import dym.coins.tax.dto.ReceiveLog
 import dym.coins.tax.dto.SendLog
 import dym.coins.tax.dto.TradeLog
@@ -21,8 +21,8 @@ class CoinspotConverter (private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZ
 
     fun buyLogFrom(tradeOp: TradeOperation): TradeLog {
         return TradeLog(
-            timestamp = tradeOp.solddate.withZoneSameInstant(timeZone),
-            incomingAsset = AssetType.of(tradeOp.coin),
+            timestamp = tradeOp.solddate.atZone(timeZone),
+            incomingAsset = tradeOp.coin,
             incomingAmount = tradeOp.amount.normalize(),
             outgoingAsset = AssetType.of(tradeOp.market.substringAfter('/')),
             outgoingAmount = tradeOp.total.normalize(),
@@ -34,10 +34,10 @@ class CoinspotConverter (private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZ
 
     fun sellLogFrom(tradeOp: TradeOperation): TradeLog {
         return TradeLog(
-            timestamp = tradeOp.solddate.withZoneSameInstant(timeZone),
+            timestamp = tradeOp.solddate.atZone(timeZone),
             incomingAsset = AssetType.of(tradeOp.market.substringAfter('/')),
             incomingAmount = tradeOp.total.normalize(),
-            outgoingAsset = AssetType.of(tradeOp.coin),
+            outgoingAsset = tradeOp.coin,
             outgoingAmount = tradeOp.amount.normalize(),
             rate = BigDecimal.ONE.normalize().divide(tradeOp.rate, Config.DEFAULT_ROUNDING_MODE),
             fee = tradeOp.audfeeExGst.add(tradeOp.audGst).normalize(),
@@ -45,18 +45,18 @@ class CoinspotConverter (private val timeZone: ZoneId? = ZoneId.of(DEFAULT_TIMEZ
         )
     }
 
-    fun sendLogFrom(transferOp: TransfersHistoryResponse.TransferOperation): SendLog {
+    fun sendLogFrom(transferOp: TransferOperation): SendLog {
         return SendLog(
-            timestamp = transferOp.timestamp.withZoneSameInstant(timeZone),
-            outgoingAsset = AssetType.of(transferOp.coin),
+            timestamp = transferOp.timestamp.atZone(timeZone),
+            outgoingAsset = transferOp.coin,
             outgoingAmount = transferOp.amount.normalize(),
             capital = transferOp.aud.toCurrency(),
         )
     }
-    fun receiveLogFrom(transferOp: TransfersHistoryResponse.TransferOperation): ReceiveLog {
+    fun receiveLogFrom(transferOp: TransferOperation): ReceiveLog {
         return ReceiveLog(
-            timestamp = transferOp.timestamp.withZoneSameInstant(timeZone),
-            incomingAsset = AssetType.of(transferOp.coin),
+            timestamp = transferOp.timestamp.atZone(timeZone),
+            incomingAsset = transferOp.coin,
             incomingAmount = transferOp.amount.normalize(),
             capital = transferOp.aud.toCurrency(),
         )

@@ -1,9 +1,10 @@
 package dym.coins.connectors
 
-import dym.coins.coinspot.api.resource.OperationType
+import dym.coins.coinspot.api.dto.TradeOperation
 import dym.coins.coinspot.api.resource.OrderHistoryResponse
+import dym.coins.coinspot.domain.AssetType
+import dym.coins.coinspot.domain.OperationType
 import dym.coins.tax.Config
-import dym.coins.tax.domain.AssetType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -21,13 +22,13 @@ class CoinspotConverterTest {
     fun buyOrderFrom() {
         val converter = CoinspotConverter(ZoneId.of("Australia/Sydney"))
 
-        val tradeOp = OrderHistoryResponse.TradeOperation(
-            coin = "POE",
+        val tradeOp = TradeOperation(
+            coin = AssetType.of("POE"),
             rate = "0.149904".toBigDecimal(),
             market = "POE/AUD",
             amount = "297.32362045".toBigDecimal(),
             type = OperationType.INSTANT,
-            solddate = ZonedDateTime.parse("2018-01-18T15:14:33.780Z"),
+            solddate = ZonedDateTime.parse("2018-01-18T15:14:33.780Z").toInstant(),
             total = "44.57".toBigDecimal(),
             audfeeExGst = "1.18014122".toBigDecimal(),
             audGst = "0.11801412".toBigDecimal(),
@@ -50,13 +51,13 @@ class CoinspotConverterTest {
     fun sellOrderFrom() {
         val converter = CoinspotConverter(ZoneId.of("Australia/Sydney"))
 
-        val tradeOp = OrderHistoryResponse.TradeOperation(
-            coin = "LOOM",
+        val tradeOp = TradeOperation(
+            coin = AssetType.of("LOOM"),
             rate = "0.099455".toBigDecimal(),
             market = "LOOM/AUD",
             amount = "492.18160892".toBigDecimal(),
             type = OperationType.TAKE_PROFIT,
-            solddate = ZonedDateTime.parse("2023-09-20T12:20:43.619Z"),
+            solddate = ZonedDateTime.parse("2023-09-20T12:20:43.619Z").toInstant(),
             total = "48.949921915138596".toBigDecimal(),
             audfeeExGst = "0.44949423".toBigDecimal(),
             audGst = "0.04494942".toBigDecimal(),

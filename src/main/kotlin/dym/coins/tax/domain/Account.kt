@@ -4,11 +4,21 @@ import dym.coins.coinspot.domain.AssetType
 import dym.coins.exceptions.TradeOperationLogException
 import dym.coins.tax.Config.Companion.DEFAULT_TIMEZONE
 import dym.coins.tax.Config.Companion.ERROR_THRESHOLD
-import dym.coins.tax.dto.*
+import dym.coins.tax.dto.IncomingLog
+import dym.coins.tax.dto.OrderedLog
+import dym.coins.tax.dto.ReceiveLog
+import dym.coins.tax.dto.SendLog
+import dym.coins.tax.dto.TradeLog
 import mu.KotlinLogging
 import java.math.BigDecimal
-import java.time.*
-import java.util.*
+import java.time.Instant
+import java.time.LocalDate
+import java.time.Month
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.util.PriorityQueue
+import java.util.TimeZone
+import java.util.TreeMap
 
 /**
  * Balance tracking and tax calculation using FIFO method for all assets.
@@ -73,12 +83,26 @@ class Account(timeZone: String = DEFAULT_TIMEZONE) : Registry {
     /**
      * Get latest balance of asset for the current tax year
      */
-    fun balance(asset: AssetType) = balance(asset, getTaxYear(ZonedDateTime.now(timeZone)))
+    fun balance(asset: AssetType) = balances[getTaxYear(ZonedDateTime.now(timeZone))]?.get(asset) ?: BigDecimal.ZERO
 
     /**
      * Get latest balance of asset for the given tax year
      */
-    fun balance(asset: AssetType, year: Int) = balances[year]?.get(asset)
+    fun balances(year: Int) = balances[year]?.toMap() ?: emptyMap()
+
+    fun years() = balances.keys.sorted()
+
+    fun gain(year: Int) = gain[year]?.toMap() ?: emptyMap()
+
+    fun gainTotal(year: Int) = gainTotal[year] ?: BigDecimal.ZERO
+
+    fun gainDiscounted(year: Int) = gainDiscounted[year]?.toMap() ?: emptyMap()
+
+    fun gainDiscountedTotal(year: Int) = gainDiscountedTotal[year] ?: BigDecimal.ZERO
+
+    fun loss(year: Int) = loss[year]?.toMap() ?: emptyMap()
+
+    fun lossTotal(year: Int) = lossTotal[year] ?: BigDecimal.ZERO
 
     /**
      * Register a trade operation in the account.
@@ -89,10 +113,8 @@ class Account(timeZone: String = DEFAULT_TIMEZONE) : Registry {
         if (op.incomingAsset.isFiat) { //We sold a coin for fiat
             processSell(op)
         } else {    //We bought a coin, add to the balance for the purchase date
+            if (!op.outgoingAsset.isFiat) processSell(op)  //The coin was bought for another coin, which was sold
             registerIncoming(op)
-            if (!op.outgoingAsset.isFiat) {    //The coin was bought for another coin, which was sold
-                processSell(op)
-            }
         }
     }
 
@@ -270,7 +292,7 @@ class Account(timeZone: String = DEFAULT_TIMEZONE) : Registry {
         taxYear = getTaxYear(op.timestamp)
     }
 
-    internal fun getYearlyBalances(year: Int): MutableMap<AssetType, BigDecimal> {
+    private fun getYearlyBalances(year: Int): MutableMap<AssetType, BigDecimal> {
         //First operation in a new financial year finalises balances for the previous year copying them over
         return balances.getOrPut(year) {
             if (balances.isEmpty()) HashMap()
